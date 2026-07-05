@@ -37,6 +37,7 @@ class Config:
     rcon_host: str
     rcon_port: int
     rcon_password: str
+    command_channel_id: int | None
     auto_stop_check_interval_secs: int
     auto_stop_empty_grace_secs: int
 
@@ -55,6 +56,7 @@ class Config:
             rcon_host=_optional_env("RCON_HOST") or _optional_env("MINECRAFT_HOST") or "127.0.0.1",
             rcon_port=_optional_env_int("RCON_PORT", 25575),
             rcon_password=_require_env("RCON_PASSWORD"),
+            command_channel_id=(int(v) if (v := _optional_env("COMMAND_CHANNEL_ID")) else None),
             auto_stop_check_interval_secs=_optional_env_int("AUTO_STOP_CHECK_INTERVAL_SECS", 900),
             auto_stop_empty_grace_secs=_optional_env_int("AUTO_STOP_EMPTY_GRACE_SECS", 300),
         )

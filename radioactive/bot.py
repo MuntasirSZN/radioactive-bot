@@ -11,6 +11,7 @@ from radioactive.auto_stop import AutoStopState
 from radioactive.azure import AzureVmClient, PowerState
 from radioactive.config import Config
 from radioactive.minecraft import (
+    _strip_format_codes,
     parse_uptime,
     query_player_count,
     query_server_status,
@@ -54,6 +55,34 @@ async def _edit_embed(interaction: discord.Interaction, embed: discord.Embed) ->
 # ── Bot client ──────────────────────────────────────────────────────────
 
 
+class _CommandTree(app_commands.CommandTree[discord.Client]):
+    """Tree that restricts commands to a configured channel."""
+
+    def __init__(
+        self,
+        client: discord.Client,
+        channel_id: int | None,
+    ) -> None:
+        super().__init__(client)
+        self._channel_id = channel_id
+
+    async def interaction_check(self, interaction: discord.Interaction, /) -> bool:
+        cid = self._channel_id
+        if cid is None:
+            return True
+        if interaction.guild is None:
+            return True
+        if interaction.channel_id == cid:
+            return True
+        embed = _embed(
+            COLOUR_YELLOW,
+            "Wrong channel",
+            f"Commands only work in <#{cid}>.",
+        )
+        await interaction.response.send_message(embed=embed, ephemeral=True)
+        return False
+
+
 class RadioactiveBot(discord.Client):
     def __init__(
         self,
@@ -67,7 +96,7 @@ class RadioactiveBot(discord.Client):
         self._config = config
         self._azure = azure
         self._auto_stop_state = auto_stop_state
-        self.tree = app_commands.CommandTree(self)
+        self.tree = _CommandTree(self, config.command_channel_id)
 
         self.start_lock = asyncio.Lock()
         self.stop_lock = asyncio.Lock()
@@ -77,6 +106,7 @@ class RadioactiveBot(discord.Client):
         self.tree.add_command(StopCommand(self))
         self.tree.add_command(PingCommand(self))
         self.tree.add_command(StatusCommand(self))
+        self.tree.add_command(RconCommand(self))
         self.tree.add_command(AutoStopCommand(self))
         self.tree.add_command(SayCommand(self))
         self.tree.add_command(UptimeCommand(self))
@@ -114,15 +144,17 @@ class RadioactiveBot(discord.Client):
             power = None
 
         if power is None:
-            activity = discord.Game(name="Unknown server status")
+            activity = discord.Game(name="☁️ Azure unreachable")
         elif power != PowerState.RUNNING:
-            activity = discord.Game(name=f"VM is {power.value}")
+            tag = str(power.value).replace("deallocated", "💤 off").replace("stopped", "💤 off")
+            activity = discord.Game(name=tag)
         else:
             try:
                 players = await query_player_count(self._config)
-                activity = discord.Game(name=f"{players} player{'s' if players != 1 else ''} online")
+                label = f"🎮 {players}" if players else "🎮 empty"
+                activity = discord.Game(name=label)
             except Exception:
-                activity = discord.Game(name="Server status unknown")
+                activity = discord.Game(name="🔌 RCON unreachable")
 
         await self.change_presence(activity=activity)
 
@@ -393,6 +425,65 @@ class StatusCommand(app_commands.Command):
             return
 
         embed = _embed(COLOUR_GREEN, "Server Status", status_text)
+        await _edit_embed(interaction, embed)
+
+
+class RconCommand(app_commands.Command):
+    """Run an RCON command (admin only)."""
+
+    def __init__(self, bot: RadioactiveBot) -> None:
+        super().__init__(
+            name="rcon",
+            description="Run an RCON command on the Minecraft server",
+            callback=self._callback,
+        )
+        self.default_permissions = discord.Permissions(administrator=True)
+        self._bot = bot
+
+    async def _callback(
+        self,
+        interaction: discord.Interaction,
+        command: str,
+    ) -> None:
+        config = self._bot.bot_config
+        azure = self._bot.bot_azure
+        await _defer(interaction)
+
+        power = await azure.power_state()
+        if power is None:
+            await _edit_embed(
+                interaction,
+                _embed(COLOUR_RED, "Error", "Could not determine VM power state."),
+            )
+            return
+        if power != PowerState.RUNNING:
+            await _edit_embed(
+                interaction,
+                _embed(COLOUR_GREY, "VM Offline", f"VM is **{power.value}**. Cannot execute RCON commands."),
+            )
+            return
+
+        try:
+            raw = await send_command(config, command)
+        except Exception as e:
+            logger.exception("RCON command failed: %s", command)
+            await _edit_embed(
+                interaction,
+                _embed(COLOUR_RED, "RCON Error", f"Command failed: {e}"),
+            )
+            return
+
+        MAX_LENGTH = 1024
+        output = raw.strip()
+        if len(output) > MAX_LENGTH:
+            output = output[:MAX_LENGTH] + "\n\n*(truncated)*"
+        output = _strip_format_codes(output)
+
+        embed = _embed(
+            COLOUR_GREEN,
+            f":terminal: `{command}`",
+            f"```{output}```" if output else "*(no output)*",
+        )
         await _edit_embed(interaction, embed)
 
 
