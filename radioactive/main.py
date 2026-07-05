@@ -2,46 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import logging
-import os
-import ssl
 from pathlib import Path
 
 import rich.logging
 
-# ── CA certificate bootstrap ──────────────────────────────────────────
-# Python 3.14+ on some distros (NixOS, static builds) has cafile=None
-# and doesn't find system CA certs automatically.  aiohttp (used by
-# discord.py) and httpx both rely on ssl.get_default_verify_paths() to
-# locate the bundle, so we must set SSL_CERT_FILE before they create
-# their SSL contexts.
-_CA_BUNDLE_CANDIDATES = [
-    "/etc/ssl/certs/ca-bundle.crt",
-    "/etc/ssl/certs/ca-certificates.crt",
-    "/etc/pki/tls/certs/ca-bundle.crt",
-    "/etc/ssl/cert.pem",
-]
-
-
-def _ensure_ca_bundle() -> None:
-    if os.environ.get("SSL_CERT_FILE"):
-        return
-    paths = ssl.get_default_verify_paths()
-    if paths.cafile and os.path.exists(paths.cafile):
-        return
-    for path in _CA_BUNDLE_CANDIDATES:
-        if os.path.exists(path):
-            os.environ["SSL_CERT_FILE"] = path
-            return
-
-
-_ensure_ca_bundle()
-
-import dotenv  # noqa: E402
-
-from radioactive.auto_stop import AutoStopState, auto_stop_loop  # noqa: E402
-from radioactive.azure import AzureVmClient  # noqa: E402
-from radioactive.bot import RadioactiveBot  # noqa: E402
-from radioactive.config import Config  # noqa: E402
+from radioactive.auto_stop import AutoStopState, auto_stop_loop
+from radioactive.azure import AzureVmClient
+from radioactive.bot import RadioactiveBot
+from radioactive.config import Config
 
 # ── Logging ───────────────────────────────────────────────────────────
 
@@ -75,6 +43,8 @@ logger = logging.getLogger("radioactive")
 
 def _load_env_files() -> None:
     """Load .env.local, then .env from the project root and cwd."""
+    import dotenv
+
     manifest_dir = Path(__file__).resolve().parent.parent
     dotenv.load_dotenv(manifest_dir / ".env.local", override=True)
     dotenv.load_dotenv(manifest_dir / ".env", override=True)

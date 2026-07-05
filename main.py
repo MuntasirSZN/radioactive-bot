@@ -1,4 +1,4 @@
-"""Pterodactyl entry point — the container runs /usr/local/bin/python /home/container/main.py."""
+"""Main Entry Point"""
 
 from radioactive.main import entry
 

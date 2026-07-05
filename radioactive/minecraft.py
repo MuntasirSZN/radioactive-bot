@@ -155,6 +155,19 @@ def parse_memory(raw_output: str) -> str | None:
     return f"{used:.0f} / {maximum:.0f} MB"
 
 
+def parse_uptime(raw_output: str) -> str | None:
+    """Parse uptime from `/gc` output.
+
+    Paper format: "Uptime: 14 minutes 3 seconds"
+    Returns e.g. "14 minutes 3 seconds" or None.
+    """
+    cleaned = _strip_format_codes(raw_output)
+    m = re.search(r"Uptime:\s*(.+)\.", cleaned, re.IGNORECASE)
+    if m:
+        return m.group(1).strip()
+    return None
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # RCON queries
 # ═══════════════════════════════════════════════════════════════════════

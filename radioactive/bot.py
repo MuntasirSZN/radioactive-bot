@@ -10,7 +10,12 @@ from discord import app_commands
 from radioactive.auto_stop import AutoStopState
 from radioactive.azure import AzureVmClient, PowerState
 from radioactive.config import Config
-from radioactive.minecraft import query_player_count, query_server_status
+from radioactive.minecraft import (
+    parse_uptime,
+    query_player_count,
+    query_server_status,
+    send_command,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +24,7 @@ logger = logging.getLogger(__name__)
 _COLOUR_GREEN = 0x57F287  # success / running
 _COLOUR_YELLOW = 0xFEE75C  # in-progress / warning
 _COLOUR_RED = 0xED4245  # error / stopped
+_COLOUR_BLUE = 0x5865F2  # info
 _COLOUR_GREY = 0x808080  # inactive
 
 
@@ -71,6 +77,9 @@ class RadioactiveBot(discord.Client):
         self.tree.add_command(StopCommand(self))
         self.tree.add_command(PingCommand(self))
         self.tree.add_command(StatusCommand(self))
+        self.tree.add_command(AutoStopCommand(self))
+        self.tree.add_command(SayCommand(self))
+        self.tree.add_command(UptimeCommand(self))
 
         if self._config.command_guild_id is not None:
             guild = discord.Object(id=self._config.command_guild_id)
@@ -384,6 +393,137 @@ class StatusCommand(app_commands.Command):
             return
 
         embed = _embed(_COLOUR_GREEN, "Server Status", status_text)
+        await _edit_embed(interaction, embed)
+
+
+class AutoStopCommand(app_commands.Command):
+    def __init__(self, bot: RadioactiveBot) -> None:
+        super().__init__(
+            name="autostop",
+            description="Show auto-stop timer status",
+            callback=self._callback,
+        )
+        self._bot = bot
+
+    async def _callback(self, interaction: discord.Interaction) -> None:
+        config = self._bot.bot_config
+        azure = self._bot.bot_azure
+        state = self._bot.bot_auto_stop_state
+        await _defer(interaction)
+
+        power = await azure.power_state()
+
+        interval = config.auto_stop_check_interval_secs
+        grace = config.auto_stop_empty_grace_secs
+
+        lines: list[str] = []
+
+        # VM state
+        lines.append(f":stop_button: **VM:** `{power.value}`" if power else "Not reachable")
+        lines.append(f":stopwatch: **Check interval:** `{interval // 60}m {interval % 60}s`")
+        lines.append(f":hourglass: **Grace period:** `{grace // 60}m {grace % 60}s`")
+
+        async with state.lock:
+            if state.empty_since is not None:
+                elapsed = time.monotonic() - state.empty_since
+                remaining = max(0.0, grace - elapsed)
+                lines.append(f":green_circle: **Auto-stop timer:** active (`{remaining / 60:.1f}` min remaining)")
+                lines.append(":warning: Server is empty; VM will deallocate when the timer expires.")
+            elif power == PowerState.RUNNING:
+                lines.append(":white_circle: **Auto-stop timer:** inactive (players online)")
+            else:
+                lines.append(":white_circle: **Auto-stop timer:** inactive (VM not running)")
+
+        embed = _embed(_COLOUR_BLUE, "Auto-Stop Status", "\n".join(lines))
+        await _edit_embed(interaction, embed)
+
+
+class SayCommand(app_commands.Command):
+    def __init__(self, bot: RadioactiveBot) -> None:
+        super().__init__(
+            name="say",
+            description="Send a message to Minecraft chat",
+            callback=self._callback,
+        )
+        self._bot = bot
+
+    async def _callback(
+        self,
+        interaction: discord.Interaction,
+        message: str,
+    ) -> None:
+        config = self._bot.bot_config
+        azure = self._bot.bot_azure
+        await _defer(interaction)
+
+        power = await azure.power_state()
+        if power != PowerState.RUNNING:
+            await _edit_embed(
+                interaction,
+                _embed(_COLOUR_GREY, "VM Offline", "Cannot send message; server is not running."),
+            )
+            return
+
+        try:
+            mc_message = f"[Discord] {interaction.user.display_name}: {message}"
+            await send_command(config, f"say {mc_message}")
+            logger.info("Say '%s' sent to Minecraft by %s", message, interaction.user)
+            await _edit_embed(
+                interaction,
+                _embed(_COLOUR_GREEN, "Message sent", "Your message was broadcast to Minecraft chat."),
+            )
+        except Exception as e:
+            logger.exception("Say command failed")
+            await _edit_embed(
+                interaction,
+                _embed(_COLOUR_RED, "Error", f"Failed to send message: {e}"),
+            )
+
+
+class UptimeCommand(app_commands.Command):
+    def __init__(self, bot: RadioactiveBot) -> None:
+        super().__init__(
+            name="uptime",
+            description="Show Minecraft server uptime",
+            callback=self._callback,
+        )
+        self._bot = bot
+
+    async def _callback(self, interaction: discord.Interaction) -> None:
+        config = self._bot.bot_config
+        azure = self._bot.bot_azure
+        await _defer(interaction)
+
+        power = await azure.power_state()
+        if power is None:
+            await _edit_embed(
+                interaction,
+                _embed(_COLOUR_RED, "Error", "Could not determine VM power state."),
+            )
+            return
+        if power != PowerState.RUNNING:
+            await _edit_embed(
+                interaction,
+                _embed(_COLOUR_GREY, "VM Offline", f"VM is **{power.value}**. Cannot query uptime."),
+            )
+            return
+
+        try:
+            gc_raw = await send_command(config, "gc")
+            uptime = parse_uptime(gc_raw)
+        except Exception:
+            logger.exception("Uptime query failed")
+            await _edit_embed(
+                interaction,
+                _embed(_COLOUR_RED, "RCON Error", "Failed to query uptime via RCON."),
+            )
+            return
+
+        embed = _embed(
+            _COLOUR_GREEN,
+            ":clock1: Server Uptime",
+            f"The Minecraft server has been running for **{uptime}**." if uptime else "Could not parse uptime.",
+        )
         await _edit_embed(interaction, embed)
 
 

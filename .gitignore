@@ -1,7 +1,5 @@
-/target
 __pycache__/
 *.pyc
 .venv/
-uv.lock
 radioactive.egg-info/
 .env*
