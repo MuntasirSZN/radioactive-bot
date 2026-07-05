@@ -14,17 +14,35 @@ from radioactive.minecraft import query_player_count, query_server_status
 
 logger = logging.getLogger(__name__)
 
-# ── Helpers shared by all commands ──────────────────────────────────────
+# ── Embed colour palette ────────────────────────────────────────────────
+
+_COLOUR_GREEN = 0x57F287  # success / running
+_COLOUR_YELLOW = 0xFEE75C  # in-progress / warning
+_COLOUR_RED = 0xED4245  # error / stopped
+_COLOUR_GREY = 0x808080  # inactive
+
+
+def _embed(
+    colour: int,
+    title: str,
+    description: str = "",
+) -> discord.Embed:
+    """Build a consistently-styled embed."""
+    e = discord.Embed(colour=colour, title=title, description=description)
+    e.set_footer(text="Radioactive Bot")
+    e.timestamp = discord.utils.utcnow()
+    return e
+
+
+# ── Response helpers ────────────────────────────────────────────────────
 
 
 async def _defer(interaction: discord.Interaction) -> None:
-    """Acknowledge the interaction with an ephemeral deferred response."""
     await interaction.response.defer(ephemeral=True, thinking=True)
 
 
-async def _edit(interaction: discord.Interaction, content: str) -> None:
-    """Replace the content of a previously-deferred ephemeral response."""
-    await interaction.edit_original_response(content=content)
+async def _edit_embed(interaction: discord.Interaction, embed: discord.Embed) -> None:
+    await interaction.edit_original_response(embed=embed)
 
 
 # ── Bot client ──────────────────────────────────────────────────────────
@@ -45,7 +63,6 @@ class RadioactiveBot(discord.Client):
         self._auto_stop_state = auto_stop_state
         self.tree = app_commands.CommandTree(self)
 
-        # Coordination locks to serialize start/stop races
         self.start_lock = asyncio.Lock()
         self.stop_lock = asyncio.Lock()
 
@@ -67,8 +84,40 @@ class RadioactiveBot(discord.Client):
 
     async def on_ready(self) -> None:
         logger.info("Connected as %s", self.user)
+        # Kick off presence updater
+        asyncio.create_task(self._presence_loop(), name="presence")
 
-    # ── Command accessors (commands get state via the bot) ──────────────
+    async def _presence_loop(self) -> None:
+        """Periodically update bot activity with live player count."""
+        while True:
+            try:
+                await self._update_presence()
+            except Exception:
+                logger.exception("Presence update failed")
+            await asyncio.sleep(300)  # 5 min
+
+    async def _update_presence(self) -> None:
+        """Set bot activity based on current server state."""
+        azure = self._azure
+        try:
+            power = await azure.power_state()
+        except Exception:
+            power = None
+
+        if power is None:
+            activity = discord.Game(name="Unknown server status")
+        elif power != PowerState.RUNNING:
+            activity = discord.Game(name=f"VM is {power.value}")
+        else:
+            try:
+                players = await query_player_count(self._config)
+                activity = discord.Game(name=f"{players} player{'s' if players != 1 else ''} online")
+            except Exception:
+                activity = discord.Game(name="Server status unknown")
+
+        await self.change_presence(activity=activity)
+
+    # ── Command accessors ─────────────────────────────────────────────
 
     @property
     def bot_config(self) -> Config:
@@ -83,7 +132,9 @@ class RadioactiveBot(discord.Client):
         return self._auto_stop_state
 
 
-# ── Slash command implementations ───────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════
+# Slash commands
+# ═══════════════════════════════════════════════════════════════════════
 
 
 class StartCommand(app_commands.Command):
@@ -98,36 +149,46 @@ class StartCommand(app_commands.Command):
     async def _callback(self, interaction: discord.Interaction) -> None:
         azure = self._bot.bot_azure
         await _defer(interaction)
-
         logger.info("Received /start command")
 
-        # Quick check: already running?
         power = await azure.power_state()
         if power == PowerState.RUNNING:
-            await _edit(interaction, "VM is already running.")
+            await _edit_embed(
+                interaction,
+                _embed(_COLOUR_YELLOW, "VM is already running."),
+            )
             return
 
-        # Check if another start is in progress
         if self._bot.start_lock.locked():
-            await _edit(
+            await _edit_embed(
                 interaction,
-                "VM is already being started. You'll be notified when it's ready.",
+                _embed(
+                    _COLOUR_YELLOW,
+                    "Already starting",
+                    "VM is already being started. You'll be notified when it's ready.",
+                ),
             )
             return
 
         async with self._bot.start_lock:
             power = await azure.power_state()
             if power == PowerState.RUNNING:
-                await _edit(interaction, "VM is already running.")
+                await _edit_embed(interaction, _embed(_COLOUR_YELLOW, "VM is already running."))
                 return
+
             if power == PowerState.STARTING:
-                await _edit(interaction, "VM is already starting; waiting for it...")
+                await _edit_embed(
+                    interaction,
+                    _embed(_COLOUR_YELLOW, "Starting VM", "VM is already starting; waiting for it..."),
+                )
             else:
                 await azure.start_vm()
                 logger.info("Azure start request sent")
-                await _edit(interaction, "Start request sent. Waiting for VM...")
+                await _edit_embed(
+                    interaction,
+                    _embed(_COLOUR_YELLOW, "Starting VM", "Start request sent. Waiting for VM to become ready..."),
+                )
 
-            # Wait in background and notify when done
             asyncio.create_task(
                 self._notify_when_running(interaction, azure),
                 name="start-wait",
@@ -138,25 +199,24 @@ class StartCommand(app_commands.Command):
         interaction: discord.Interaction,
         azure: AzureVmClient,
     ) -> None:
-        """Wait for VM to reach 'running' state, then notify the user."""
         try:
-            started = await _wait_for_power_state(
-                azure,
-                PowerState.RUNNING,
-                timeout=480,
-                interval=10,
-            )
+            started = await _wait_for_power_state(azure, PowerState.RUNNING, timeout=480, interval=10)
             if started:
-                await _edit(interaction, "VM is started.")
+                embed = _embed(_COLOUR_GREEN, "VM is started", "The virtual machine is now running.")
             else:
-                await _edit(
-                    interaction,
-                    "Start request sent, but VM is still starting. Try /ping in a minute.",
+                embed = _embed(
+                    _COLOUR_YELLOW,
+                    "VM still starting",
+                    "Start request sent, but VM is still starting. Try `/ping` in a minute.",
                 )
+            await _edit_embed(interaction, embed)
         except Exception:
             logger.exception("Background start-wait failed")
             try:
-                await _edit(interaction, "An error occurred while waiting for the VM to start.")
+                await _edit_embed(
+                    interaction,
+                    _embed(_COLOUR_RED, "Error", "An error occurred while waiting for the VM to start."),
+                )
             except Exception:
                 pass
 
@@ -173,35 +233,39 @@ class StopCommand(app_commands.Command):
     async def _callback(self, interaction: discord.Interaction) -> None:
         azure = self._bot.bot_azure
         await _defer(interaction)
-
         logger.info("Received /stop command")
 
-        # Quick check: already stopped?
         power = await azure.power_state()
         if power in (PowerState.DEALLOCATED, PowerState.STOPPED):
-            await _edit(interaction, "VM is already stopped.")
+            await _edit_embed(
+                interaction,
+                _embed(_COLOUR_YELLOW, "VM is already stopped."),
+            )
             return
 
         if self._bot.stop_lock.locked():
-            await _edit(interaction, "VM is already being stopped.")
+            await _edit_embed(
+                interaction,
+                _embed(_COLOUR_YELLOW, "Already stopping", "VM is already being stopped."),
+            )
             return
 
         async with self._bot.stop_lock:
             power = await azure.power_state()
             if power in (PowerState.DEALLOCATED, PowerState.STOPPED):
-                await _edit(interaction, "VM is already stopped.")
+                await _edit_embed(interaction, _embed(_COLOUR_YELLOW, "VM is already stopped."))
                 return
 
             await azure.deallocate_vm()
 
-            # Reset auto-stop grace timer since we're manually stopping
             async with self._bot.bot_auto_stop_state.lock:
                 self._bot.bot_auto_stop_state.empty_since = None
 
             logger.info("Azure stop (deallocate) request sent")
-
-            # Wait in background and notify when done
-            await _edit(interaction, "Stop request sent. Waiting for VM to deallocate...")
+            await _edit_embed(
+                interaction,
+                _embed(_COLOUR_YELLOW, "Stopping VM", "Stop request sent. Waiting for VM to deallocate..."),
+            )
             asyncio.create_task(
                 self._notify_when_stopped(interaction, azure),
                 name="stop-wait",
@@ -213,23 +277,23 @@ class StopCommand(app_commands.Command):
         azure: AzureVmClient,
     ) -> None:
         try:
-            stopped = await _wait_for_power_state(
-                azure,
-                PowerState.DEALLOCATED,
-                timeout=360,
-                interval=10,
-            )
+            stopped = await _wait_for_power_state(azure, PowerState.DEALLOCATED, timeout=360, interval=10)
             if stopped:
-                await _edit(interaction, "VM is stopped.")
+                embed = _embed(_COLOUR_RED, "VM is stopped", "The virtual machine has been deallocated.")
             else:
-                await _edit(
-                    interaction,
+                embed = _embed(
+                    _COLOUR_YELLOW,
+                    "VM still shutting down",
                     "Stop request sent, but VM is still shutting down.",
                 )
+            await _edit_embed(interaction, embed)
         except Exception:
             logger.exception("Background stop-wait failed")
             try:
-                await _edit(interaction, "An error occurred while waiting for the VM to stop.")
+                await _edit_embed(
+                    interaction,
+                    _embed(_COLOUR_RED, "Error", "An error occurred while waiting for the VM to stop."),
+                )
             except Exception:
                 pass
 
@@ -250,12 +314,15 @@ class PingCommand(app_commands.Command):
 
         power = await azure.power_state()
         if power is None:
-            await _edit(interaction, "Could not determine VM power state.")
+            await _edit_embed(
+                interaction,
+                _embed(_COLOUR_RED, "Error", "Could not determine VM power state."),
+            )
             return
         if power != PowerState.RUNNING:
-            await _edit(
+            await _edit_embed(
                 interaction,
-                f"VM is {power.value}. Minecraft is not reachable.",
+                _embed(_COLOUR_GREY, "Minecraft Offline", f"VM is **{power.value}**. Minecraft is not reachable."),
             )
             return
 
@@ -263,20 +330,25 @@ class PingCommand(app_commands.Command):
             players = await query_player_count(config)
         except Exception:
             logger.exception("RCON ping failed")
-            await _edit(interaction, "Failed to reach Minecraft server via RCON.")
+            await _edit_embed(
+                interaction,
+                _embed(_COLOUR_RED, "RCON Error", "Failed to reach Minecraft server via RCON."),
+            )
             return
 
-        await _edit(
-            interaction,
-            f"Minecraft is reachable. Online players: {players}.",
+        embed = _embed(
+            _COLOUR_GREEN,
+            "Minecraft Online",
+            f"Server is reachable. **{players}** player{'s' if players != 1 else ''} online.",
         )
+        await _edit_embed(interaction, embed)
 
 
 class StatusCommand(app_commands.Command):
     def __init__(self, bot: RadioactiveBot) -> None:
         super().__init__(
             name="status",
-            description="Show server status (players, TPS)",
+            description="Show server status (players, TPS, memory)",
             callback=self._callback,
         )
         self._bot = bot
@@ -288,26 +360,36 @@ class StatusCommand(app_commands.Command):
 
         power = await azure.power_state()
         if power is None:
-            await _edit(interaction, "Could not determine VM power state.")
-            return
-        if power != PowerState.RUNNING:
-            await _edit(
+            await _edit_embed(
                 interaction,
-                f"VM is {power.value}. Minecraft is not reachable.",
+                _embed(_COLOUR_RED, "Error", "Could not determine VM power state."),
+            )
+            return
+
+        if power != PowerState.RUNNING:
+            await _edit_embed(
+                interaction,
+                _embed(_COLOUR_GREY, "VM Offline", f"VM is **{power.value}**. Minecraft is not reachable."),
             )
             return
 
         try:
-            status = await query_server_status(config)
+            status_text = await query_server_status(config)
         except Exception:
             logger.exception("Status query failed")
-            await _edit(interaction, "Failed to query server status via RCON.")
+            await _edit_embed(
+                interaction,
+                _embed(_COLOUR_RED, "RCON Error", "Failed to query server status via RCON."),
+            )
             return
 
-        await _edit(interaction, status)
+        embed = _embed(_COLOUR_GREEN, "Server Status", status_text)
+        await _edit_embed(interaction, embed)
 
 
-# ── Utilities ───────────────────────────────────────────────────────────
+# ═══════════════════════════════════════════════════════════════════════
+# Utilities
+# ═══════════════════════════════════════════════════════════════════════
 
 
 async def _wait_for_power_state(
@@ -316,10 +398,6 @@ async def _wait_for_power_state(
     timeout: int,
     interval: int,
 ) -> bool:
-    """Poll Azure until *target_state* is reached, or *timeout* seconds elapse.
-
-    Returns True if the state was reached.
-    """
     deadline = time.monotonic() + timeout
     while True:
         power = await azure.power_state()

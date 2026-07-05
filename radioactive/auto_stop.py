@@ -50,24 +50,30 @@ async def auto_stop_tick(
             state.empty_since = None
         return
 
+    # Try to query RCON.  If it fails we still check the grace timer below
+    # so a prior "empty" tick isn't wasted by a transient RCON blip.
+    known_empty = False
     try:
         players = await query_player_count(config)
+        logger.info("Auto-stop check: online players = %d", players)
+        if players > 0:
+            async with state.lock:
+                state.empty_since = None
+            return
+        known_empty = True
     except Exception as exc:
         logger.warning("Failed to query Minecraft online players: %s", exc)
-        return
-    logger.info("Auto-stop check: online players = %d", players)
 
-    if players > 0:
-        async with state.lock:
-            state.empty_since = None
-        return
-
+    # ── Grace timer ──────────────────────────────────────────────────
     now = time.monotonic()
     grace = max(config.auto_stop_empty_grace_secs, 30)
     async with state.lock:
         if state.empty_since is None:
-            state.empty_since = now
-            logger.info("Minecraft is empty; starting auto-stop grace timer")
+            # Only start the timer when we *know* the server is empty.
+            # A transient RCON failure alone doesn't prove emptiness.
+            if known_empty:
+                state.empty_since = now
+                logger.info("Minecraft is empty; starting auto-stop grace timer")
         elif now - state.empty_since >= grace:
             logger.info("Minecraft empty past grace period; deallocating VM")
             try:

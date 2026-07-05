@@ -6,6 +6,8 @@ import os
 import ssl
 from pathlib import Path
 
+import rich.logging
+
 # ── CA certificate bootstrap ──────────────────────────────────────────
 # Python 3.14+ on some distros (NixOS, static builds) has cafile=None
 # and doesn't find system CA certs automatically.  aiohttp (used by
@@ -43,10 +45,17 @@ from radioactive.config import Config  # noqa: E402
 
 # ── Logging ───────────────────────────────────────────────────────────
 
+_handler = rich.logging.RichHandler(
+    show_time=True,
+    show_path=False,
+    rich_tracebacks=True,
+    tracebacks_show_locals=True,
+)
+_handler.setLevel(logging.INFO)
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
-    datefmt="%Y-%m-%dT%H:%M:%S",
+    format="%(message)s",
+    handlers=[_handler],
 )
 
 # Suppress verbose SDK request logging
