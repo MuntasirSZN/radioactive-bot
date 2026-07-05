@@ -38,7 +38,7 @@ def _embed(
 
 
 async def _defer(interaction: discord.Interaction) -> None:
-    await interaction.response.defer(ephemeral=True, thinking=True)
+    await interaction.response.defer(ephemeral=False, thinking=True)
 
 
 async def _edit_embed(interaction: discord.Interaction, embed: discord.Embed) -> None:

@@ -118,24 +118,41 @@ def parse_tps(raw_output: str) -> str | None:
 
 
 def parse_memory(raw_output: str) -> str | None:
-    """Parse EssentialsX `/gc` memory line into a human-readable string.
+    """Parse `/gc` output into a human-readable memory string.
 
-    Output format (after stripping codes):
-        "Memory: 1024.0 MB / 2048.0 MB (free: 500.0 MB)"
-    Returns e.g. "1.0 / 2.0 GB" or None.
+    Supports two formats:
+        EssentialsX: "Memory: 1024.0 MB / 2048.0 MB (free: 500.0 MB)"
+        Paper/Vanilla: "Maximum memory: 6,504 MB." + "Free memory: 4,166 MB."
+    Returns e.g. "2.3 / 6.4 GB" or None.
     """
     cleaned = _strip_format_codes(raw_output)
 
-    m = re.search(r"Memory:\s*([\d.]+)\s*MB\s*/\s*([\d.]+)\s*MB", cleaned, re.IGNORECASE)
+    # Strip commas from numbers before any parsing
+    cleaned_no_comma = cleaned.replace(",", "")
+
+    # Try EssentialsX format first
+    m = re.search(
+        r"Memory:\s*([\d.]+)\s*MB\s*/\s*([\d.]+)\s*MB",
+        cleaned_no_comma,
+        re.IGNORECASE,
+    )
     if m:
         used = float(m.group(1))
         maximum = float(m.group(2))
-        # Convert to GB if >= 1024 MB
-        if maximum >= 1024:
-            return f"{used / 1024:.1f} / {maximum / 1024:.1f} GB"
-        return f"{used:.0f} / {maximum:.0f} MB"
+    else:
+        # Paper/Vanilla format: parse Maximum memory and Free memory lines
+        max_m = re.search(r"Maximum memory:\s*([\d.]+)\s*MB", cleaned_no_comma, re.IGNORECASE)
+        free_m = re.search(r"Free memory:\s*([\d.]+)\s*MB", cleaned_no_comma, re.IGNORECASE)
+        if not max_m:
+            return None
+        maximum = float(max_m.group(1))
+        free = float(free_m.group(1)) if free_m else 0
+        used = maximum - free
 
-    return None
+    # Convert to GB if >= 1024 MB
+    if maximum >= 1024:
+        return f"{used / 1024:.1f} / {maximum / 1024:.1f} GB"
+    return f"{used:.0f} / {maximum:.0f} MB"
 
 
 # ═══════════════════════════════════════════════════════════════════════
