@@ -1,0 +1,22 @@
+[project]
+name = "radioactive"
+version = "0.1.0"
+description = "Discord bot for managing a Minecraft Azure VM"
+requires-python = ">=3.11"
+dependencies = [
+    "discord-py>=2.4",
+    "azure-identity>=1.12",
+    "httpx>=0.25",
+    "python-dotenv>=1.0",
+    "async-mcrcon>=0.1",
+]
+
+[project.scripts]
+radioactive = "radioactive.main:entry"
+
+[tool.ruff]
+line-length = 120
+target-version = "py311"
+
+[tool.uv]
+package = true

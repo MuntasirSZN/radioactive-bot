@@ -1,0 +1,5 @@
+discord-py>=2.4
+azure-identity>=1.12
+httpx>=0.25
+python-dotenv>=1.0
+async-mcrcon>=0.1
