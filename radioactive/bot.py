@@ -21,11 +21,11 @@ logger = logging.getLogger(__name__)
 
 # ── Embed colour palette ────────────────────────────────────────────────
 
-_COLOUR_GREEN = 0x57F287  # success / running
-_COLOUR_YELLOW = 0xFEE75C  # in-progress / warning
-_COLOUR_RED = 0xED4245  # error / stopped
-_COLOUR_BLUE = 0x5865F2  # info
-_COLOUR_GREY = 0x808080  # inactive
+COLOUR_GREEN = 0x57F287  # success / running
+COLOUR_YELLOW = 0xFEE75C  # in-progress / warning
+COLOUR_RED = 0xED4245  # error / stopped
+COLOUR_BLUE = 0x5865F2  # info
+COLOUR_GREY = 0x808080  # inactive
 
 
 def _embed(
@@ -164,7 +164,7 @@ class StartCommand(app_commands.Command):
         if power == PowerState.RUNNING:
             await _edit_embed(
                 interaction,
-                _embed(_COLOUR_YELLOW, "VM is already running."),
+                _embed(COLOUR_YELLOW, "VM is already running."),
             )
             return
 
@@ -172,7 +172,7 @@ class StartCommand(app_commands.Command):
             await _edit_embed(
                 interaction,
                 _embed(
-                    _COLOUR_YELLOW,
+                    COLOUR_YELLOW,
                     "Already starting",
                     "VM is already being started. You'll be notified when it's ready.",
                 ),
@@ -182,20 +182,20 @@ class StartCommand(app_commands.Command):
         async with self._bot.start_lock:
             power = await azure.power_state()
             if power == PowerState.RUNNING:
-                await _edit_embed(interaction, _embed(_COLOUR_YELLOW, "VM is already running."))
+                await _edit_embed(interaction, _embed(COLOUR_YELLOW, "VM is already running."))
                 return
 
             if power == PowerState.STARTING:
                 await _edit_embed(
                     interaction,
-                    _embed(_COLOUR_YELLOW, "Starting VM", "VM is already starting; waiting for it..."),
+                    _embed(COLOUR_YELLOW, "Starting VM", "VM is already starting; waiting for it..."),
                 )
             else:
                 await azure.start_vm()
                 logger.info("Azure start request sent")
                 await _edit_embed(
                     interaction,
-                    _embed(_COLOUR_YELLOW, "Starting VM", "Start request sent. Waiting for VM to become ready..."),
+                    _embed(COLOUR_YELLOW, "Starting VM", "Start request sent. Waiting for VM to become ready..."),
                 )
 
             asyncio.create_task(
@@ -211,10 +211,10 @@ class StartCommand(app_commands.Command):
         try:
             started = await _wait_for_power_state(azure, PowerState.RUNNING, timeout=480, interval=10)
             if started:
-                embed = _embed(_COLOUR_GREEN, "VM is started", "The virtual machine is now running.")
+                embed = _embed(COLOUR_GREEN, "VM is started", "The virtual machine is now running.")
             else:
                 embed = _embed(
-                    _COLOUR_YELLOW,
+                    COLOUR_YELLOW,
                     "VM still starting",
                     "Start request sent, but VM is still starting. Try `/ping` in a minute.",
                 )
@@ -224,7 +224,7 @@ class StartCommand(app_commands.Command):
             try:
                 await _edit_embed(
                     interaction,
-                    _embed(_COLOUR_RED, "Error", "An error occurred while waiting for the VM to start."),
+                    _embed(COLOUR_RED, "Error", "An error occurred while waiting for the VM to start."),
                 )
             except Exception:
                 pass
@@ -248,21 +248,21 @@ class StopCommand(app_commands.Command):
         if power in (PowerState.DEALLOCATED, PowerState.STOPPED):
             await _edit_embed(
                 interaction,
-                _embed(_COLOUR_YELLOW, "VM is already stopped."),
+                _embed(COLOUR_YELLOW, "VM is already stopped."),
             )
             return
 
         if self._bot.stop_lock.locked():
             await _edit_embed(
                 interaction,
-                _embed(_COLOUR_YELLOW, "Already stopping", "VM is already being stopped."),
+                _embed(COLOUR_YELLOW, "Already stopping", "VM is already being stopped."),
             )
             return
 
         async with self._bot.stop_lock:
             power = await azure.power_state()
             if power in (PowerState.DEALLOCATED, PowerState.STOPPED):
-                await _edit_embed(interaction, _embed(_COLOUR_YELLOW, "VM is already stopped."))
+                await _edit_embed(interaction, _embed(COLOUR_YELLOW, "VM is already stopped."))
                 return
 
             await azure.deallocate_vm()
@@ -273,7 +273,7 @@ class StopCommand(app_commands.Command):
             logger.info("Azure stop (deallocate) request sent")
             await _edit_embed(
                 interaction,
-                _embed(_COLOUR_YELLOW, "Stopping VM", "Stop request sent. Waiting for VM to deallocate..."),
+                _embed(COLOUR_YELLOW, "Stopping VM", "Stop request sent. Waiting for VM to deallocate..."),
             )
             asyncio.create_task(
                 self._notify_when_stopped(interaction, azure),
@@ -288,10 +288,10 @@ class StopCommand(app_commands.Command):
         try:
             stopped = await _wait_for_power_state(azure, PowerState.DEALLOCATED, timeout=360, interval=10)
             if stopped:
-                embed = _embed(_COLOUR_RED, "VM is stopped", "The virtual machine has been deallocated.")
+                embed = _embed(COLOUR_RED, "VM is stopped", "The virtual machine has been deallocated.")
             else:
                 embed = _embed(
-                    _COLOUR_YELLOW,
+                    COLOUR_YELLOW,
                     "VM still shutting down",
                     "Stop request sent, but VM is still shutting down.",
                 )
@@ -301,7 +301,7 @@ class StopCommand(app_commands.Command):
             try:
                 await _edit_embed(
                     interaction,
-                    _embed(_COLOUR_RED, "Error", "An error occurred while waiting for the VM to stop."),
+                    _embed(COLOUR_RED, "Error", "An error occurred while waiting for the VM to stop."),
                 )
             except Exception:
                 pass
@@ -325,13 +325,13 @@ class PingCommand(app_commands.Command):
         if power is None:
             await _edit_embed(
                 interaction,
-                _embed(_COLOUR_RED, "Error", "Could not determine VM power state."),
+                _embed(COLOUR_RED, "Error", "Could not determine VM power state."),
             )
             return
         if power != PowerState.RUNNING:
             await _edit_embed(
                 interaction,
-                _embed(_COLOUR_GREY, "Minecraft Offline", f"VM is **{power.value}**. Minecraft is not reachable."),
+                _embed(COLOUR_GREY, "Minecraft Offline", f"VM is **{power.value}**. Minecraft is not reachable."),
             )
             return
 
@@ -341,12 +341,12 @@ class PingCommand(app_commands.Command):
             logger.exception("RCON ping failed")
             await _edit_embed(
                 interaction,
-                _embed(_COLOUR_RED, "RCON Error", "Failed to reach Minecraft server via RCON."),
+                _embed(COLOUR_RED, "RCON Error", "Failed to reach Minecraft server via RCON."),
             )
             return
 
         embed = _embed(
-            _COLOUR_GREEN,
+            COLOUR_GREEN,
             "Minecraft Online",
             f"Server is reachable. **{players}** player{'s' if players != 1 else ''} online.",
         )
@@ -371,14 +371,14 @@ class StatusCommand(app_commands.Command):
         if power is None:
             await _edit_embed(
                 interaction,
-                _embed(_COLOUR_RED, "Error", "Could not determine VM power state."),
+                _embed(COLOUR_RED, "Error", "Could not determine VM power state."),
             )
             return
 
         if power != PowerState.RUNNING:
             await _edit_embed(
                 interaction,
-                _embed(_COLOUR_GREY, "VM Offline", f"VM is **{power.value}**. Minecraft is not reachable."),
+                _embed(COLOUR_GREY, "VM Offline", f"VM is **{power.value}**. Minecraft is not reachable."),
             )
             return
 
@@ -388,11 +388,11 @@ class StatusCommand(app_commands.Command):
             logger.exception("Status query failed")
             await _edit_embed(
                 interaction,
-                _embed(_COLOUR_RED, "RCON Error", "Failed to query server status via RCON."),
+                _embed(COLOUR_RED, "RCON Error", "Failed to query server status via RCON."),
             )
             return
 
-        embed = _embed(_COLOUR_GREEN, "Server Status", status_text)
+        embed = _embed(COLOUR_GREEN, "Server Status", status_text)
         await _edit_embed(interaction, embed)
 
 
@@ -434,7 +434,7 @@ class AutoStopCommand(app_commands.Command):
             else:
                 lines.append(":white_circle: **Auto-stop timer:** inactive (VM not running)")
 
-        embed = _embed(_COLOUR_BLUE, "Auto-Stop Status", "\n".join(lines))
+        embed = _embed(COLOUR_BLUE, "Auto-Stop Status", "\n".join(lines))
         await _edit_embed(interaction, embed)
 
 
@@ -460,7 +460,7 @@ class SayCommand(app_commands.Command):
         if power != PowerState.RUNNING:
             await _edit_embed(
                 interaction,
-                _embed(_COLOUR_GREY, "VM Offline", "Cannot send message; server is not running."),
+                _embed(COLOUR_GREY, "VM Offline", "Cannot send message; server is not running."),
             )
             return
 
@@ -470,13 +470,13 @@ class SayCommand(app_commands.Command):
             logger.info("Say '%s' sent to Minecraft by %s", message, interaction.user)
             await _edit_embed(
                 interaction,
-                _embed(_COLOUR_GREEN, "Message sent", "Your message was broadcast to Minecraft chat."),
+                _embed(COLOUR_GREEN, "Message sent", "Your message was broadcast to Minecraft chat."),
             )
         except Exception as e:
             logger.exception("Say command failed")
             await _edit_embed(
                 interaction,
-                _embed(_COLOUR_RED, "Error", f"Failed to send message: {e}"),
+                _embed(COLOUR_RED, "Error", f"Failed to send message: {e}"),
             )
 
 
@@ -498,13 +498,13 @@ class UptimeCommand(app_commands.Command):
         if power is None:
             await _edit_embed(
                 interaction,
-                _embed(_COLOUR_RED, "Error", "Could not determine VM power state."),
+                _embed(COLOUR_RED, "Error", "Could not determine VM power state."),
             )
             return
         if power != PowerState.RUNNING:
             await _edit_embed(
                 interaction,
-                _embed(_COLOUR_GREY, "VM Offline", f"VM is **{power.value}**. Cannot query uptime."),
+                _embed(COLOUR_GREY, "VM Offline", f"VM is **{power.value}**. Cannot query uptime."),
             )
             return
 
@@ -515,12 +515,12 @@ class UptimeCommand(app_commands.Command):
             logger.exception("Uptime query failed")
             await _edit_embed(
                 interaction,
-                _embed(_COLOUR_RED, "RCON Error", "Failed to query uptime via RCON."),
+                _embed(COLOUR_RED, "RCON Error", "Failed to query uptime via RCON."),
             )
             return
 
         embed = _embed(
-            _COLOUR_GREEN,
+            COLOUR_GREEN,
             ":clock1: Server Uptime",
             f"The Minecraft server has been running for **{uptime}**." if uptime else "Could not parse uptime.",
         )
