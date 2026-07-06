@@ -182,22 +182,21 @@ class StartCommand(app_commands.Command):
     def __init__(self, bot: RadioactiveBot) -> None:
         super().__init__(
             name="start",
-            description="Start the Azure VM",
+            description="Start the VM and Minecraft server",
             callback=self._callback,
         )
         self._bot = bot
 
     async def _callback(self, interaction: discord.Interaction) -> None:
         azure = self._bot.bot_azure
+        config = self._bot.bot_config
         await _defer(interaction)
         logger.info("Received /start command")
 
         power = await azure.power_state()
         if power == PowerState.RUNNING:
-            await _edit_embed(
-                interaction,
-                _embed(COLOUR_YELLOW, "VM is already running."),
-            )
+            embed = _embed(COLOUR_YELLOW, "VM is already running", "Minecraft might already be up. Try `/status`.")
+            await _edit_embed(interaction, embed)
             return
 
         if self._bot.start_lock.locked():
@@ -214,41 +213,73 @@ class StartCommand(app_commands.Command):
         async with self._bot.start_lock:
             power = await azure.power_state()
             if power == PowerState.RUNNING:
-                await _edit_embed(interaction, _embed(COLOUR_YELLOW, "VM is already running."))
+                embed = _embed(COLOUR_YELLOW, "VM is already running", "Minecraft might already be up. Try `/status`.")
+                await _edit_embed(interaction, embed)
                 return
 
             if power == PowerState.STARTING:
                 await _edit_embed(
                     interaction,
-                    _embed(COLOUR_YELLOW, "Starting VM", "VM is already starting; waiting for it..."),
+                    _embed(COLOUR_YELLOW, "\u23f3 Starting VM", "VM is already starting; waiting for it..."),
                 )
             else:
                 await azure.start_vm()
                 logger.info("Azure start request sent")
                 await _edit_embed(
                     interaction,
-                    _embed(COLOUR_YELLOW, "Starting VM", "Start request sent. Waiting for VM to become ready..."),
+                    _embed(COLOUR_YELLOW, "\u23f3 Starting VM", "Start request sent. Waiting for VM to power on..."),
                 )
 
             asyncio.create_task(
-                self._notify_when_running(interaction, azure),
+                self._notify_when_ready(interaction, azure, config),
                 name="start-wait",
             )
 
     @staticmethod
-    async def _notify_when_running(
+    async def _notify_when_ready(
         interaction: discord.Interaction,
         azure: AzureVmClient,
+        config: Config,
     ) -> None:
         try:
+            # Stage 1 — wait for Azure VM to reach RUNNING
             started = await _wait_for_power_state(azure, PowerState.RUNNING, timeout=480, interval=10)
-            if started:
-                embed = _embed(COLOUR_GREEN, "VM is started", "The virtual machine is now running.")
+            if not started:
+                await _edit_embed(
+                    interaction,
+                    _embed(
+                        COLOUR_YELLOW,
+                        "\u23f3 VM still starting",
+                        "Start sent, but VM is taking a while. Try `/ping` in a minute.",
+                    ),
+                )
+                return
+
+            await _edit_embed(
+                interaction,
+                _embed(COLOUR_GREEN, "\u2705 VM started", "Waiting for Minecraft to come online..."),
+            )
+
+            # Stage 2 — wait for RCON to respond
+            deadline = time.monotonic() + 120  # 2 min for Minecraft to boot
+            mc_ready = False
+            while time.monotonic() < deadline:
+                try:
+                    resp = await send_command(config, "ping")
+                    if "Pong!" in resp:
+                        mc_ready = True
+                        break
+                except Exception:
+                    pass
+                await asyncio.sleep(15)
+
+            if mc_ready:
+                embed = _embed(COLOUR_GREEN, "\u2705 Server ready", "Minecraft is online and accepting connections.")
             else:
                 embed = _embed(
                     COLOUR_YELLOW,
-                    "VM still starting",
-                    "Start request sent, but VM is still starting. Try `/ping` in a minute.",
+                    "\u23f3 Minecraft still starting",
+                    "VM is running but Minecraft is taking longer than expected. Try `/status` in a moment.",
                 )
             await _edit_embed(interaction, embed)
         except Exception:
@@ -256,7 +287,7 @@ class StartCommand(app_commands.Command):
             try:
                 await _edit_embed(
                     interaction,
-                    _embed(COLOUR_RED, "Error", "An error occurred while waiting for the VM to start."),
+                    _embed(COLOUR_RED, "Error", "An error occurred while waiting for the server to start."),
                 )
             except Exception:
                 pass
