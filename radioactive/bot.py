@@ -592,7 +592,11 @@ class SayCommand(app_commands.Command):
             logger.info("Say '%s' sent to Minecraft by %s", message, interaction.user)
             await _edit_embed(
                 interaction,
-                _embed(COLOUR_GREEN, "Message sent", "Your message was broadcast to Minecraft chat."),
+                _embed(
+                    COLOUR_GREEN,
+                    "Message sent",
+                    f"```\n[Discord] {interaction.user.display_name}: {message}\n```",
+                ),
             )
         except Exception as e:
             logger.exception("Say command failed")
