@@ -512,7 +512,7 @@ class RconCommand(app_commands.Command):
 
         embed = _embed(
             COLOUR_GREEN,
-            f":terminal: `{command}`",
+            f"💻 `{command}`",
             f"```{output}```" if output else "*(no output)*",
         )
         await _edit_embed(interaction, embed)
@@ -541,20 +541,20 @@ class AutoStopCommand(app_commands.Command):
         lines: list[str] = []
 
         # VM state
-        lines.append(f":stop_button: **VM:** `{power.value}`" if power else "Not reachable")
-        lines.append(f":stopwatch: **Check interval:** `{interval // 60}m {interval % 60}s`")
-        lines.append(f":hourglass: **Grace period:** `{grace // 60}m {grace % 60}s`")
+        lines.append(f"⏹️ **VM:** `{power.value}`" if power else "Not reachable")
+        lines.append(f"⏱️ **Check interval:** `{interval // 60}m {interval % 60}s`")
+        lines.append(f"⏳ **Grace period:** `{grace // 60}m {grace % 60}s`")
 
         async with state.lock:
             if state.empty_since is not None:
                 elapsed = time.monotonic() - state.empty_since
                 remaining = max(0.0, grace - elapsed)
-                lines.append(f":green_circle: **Auto-stop timer:** active (`{remaining / 60:.1f}` min remaining)")
-                lines.append(":warning: Server is empty; VM will deallocate when the timer expires.")
+                lines.append(f"🟢 **Auto-stop timer:** active (`{remaining / 60:.1f}` min remaining)")
+                lines.append("⚠️ Server is empty; VM will deallocate when the timer expires.")
             elif power == PowerState.RUNNING:
-                lines.append(":white_circle: **Auto-stop timer:** inactive (players online)")
+                lines.append("⚪ **Auto-stop timer:** inactive (players online)")
             else:
-                lines.append(":white_circle: **Auto-stop timer:** inactive (VM not running)")
+                lines.append("⚪ **Auto-stop timer:** inactive (VM not running)")
 
         embed = _embed(COLOUR_BLUE, "Auto-Stop Status", "\n".join(lines))
         await _edit_embed(interaction, embed)
