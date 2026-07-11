@@ -158,11 +158,11 @@ def parse_memory(raw_output: str) -> str | None:
 def parse_uptime(raw_output: str) -> str | None:
     """Parse uptime from `/gc` output.
 
-    Paper format: "Uptime: 14 minutes 3 seconds"
+    Paper format: "Uptime: 14 minutes 3 seconds"  (may or may not end with a dot)
     Returns e.g. "14 minutes 3 seconds" or None.
     """
     cleaned = _strip_format_codes(raw_output)
-    m = re.search(r"Uptime:\s*(.+)\.", cleaned, re.IGNORECASE)
+    m = re.search(r"Uptime:\s*(.+?)\.?\s*$", cleaned, re.IGNORECASE | re.MULTILINE)
     if m:
         return m.group(1).strip()
     return None
