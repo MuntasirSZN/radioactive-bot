@@ -1,15 +1,68 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from typing import TYPE_CHECKING
 
-from async_mcrcon import MinecraftClient
+import aiomcrcon
 
 if TYPE_CHECKING:
     from radioactive.config import Config
 
 logger = logging.getLogger(__name__)
+
+# ── RCON persistent connection ────────────────────────────────────────
+# Reuse a single TCP connection across all RCON calls instead of opening
+# a new one per command.  Auto-reconnects on the next call after a drop.
+
+_rcon_client: aiomcrcon.Client | None = None
+_rcon_lock = asyncio.Lock()
+_rcon_config: tuple[str, int, str] | None = None
+
+
+async def _get_rcon(config: Config) -> aiomcrcon.Client:
+    """Return the shared RCON client, connecting lazily on first use."""
+    global _rcon_client, _rcon_config
+
+    cfg = (config.rcon_host, config.rcon_port, config.rcon_password)
+    # If config changed (shouldn't happen at runtime), force reconnect
+    if _rcon_client is not None and _rcon_config != cfg:
+        try:
+            await _rcon_client.close()
+        except Exception:
+            pass
+        _rcon_client = None
+
+    if _rcon_client is not None:
+        return _rcon_client
+
+    async with _rcon_lock:
+        if _rcon_client is not None:
+            return _rcon_client
+        client = aiomcrcon.Client(config.rcon_host, config.rcon_port, config.rcon_password)
+        try:
+            await client.connect(timeout=8)
+        except aiomcrcon.IncorrectPasswordError:
+            logger.critical("RCON authentication failed — check RCON_PASSWORD")
+            raise
+        except (OSError, aiomcrcon.RCONConnectionError) as exc:
+            raise ConnectionError(f"RCON connection failed: {exc}") from exc
+        _rcon_client = client
+        _rcon_config = cfg
+        return _rcon_client
+
+
+async def _close_rcon() -> None:
+    """Tear down the shared RCON connection."""
+    global _rcon_client
+    if _rcon_client is not None:
+        try:
+            await _rcon_client.close()
+        except Exception:
+            pass
+        _rcon_client = None
+
 
 # Matches Minecraft §-style format codes, optionally prefixed with Â (UTF-8 encoding artifact)
 _FORMAT_CODE_RE = re.compile(r"Â?§[0-9a-fk-or]")
@@ -104,13 +157,10 @@ def parse_tps(raw_output: str) -> str | None:
     cleaned = _strip_format_codes(raw_output)
 
     # Try to find three comma-separated floats
-    # Paper: "TPS is 20.0, 20.0, 20.0"
-    # Spigot: "TPS from ...: 20.0, 20.0, 20.0"
     tps_nums = re.findall(r"\b\d{1,2}\.\d+\b", cleaned)
     if len(tps_nums) >= 3:
         return f"{tps_nums[0]}, {tps_nums[1]}, {tps_nums[2]}"
 
-    # Single TPS value
     if tps_nums:
         return tps_nums[0]
 
@@ -169,18 +219,23 @@ def parse_uptime(raw_output: str) -> str | None:
 
 
 # ═══════════════════════════════════════════════════════════════════════
-# RCON queries
+# RCON queries — reuse persistent connection
 # ═══════════════════════════════════════════════════════════════════════
 
 
 async def send_command(config: Config, command: str) -> str:
     """Send a single RCON command and return the raw response."""
-    async with MinecraftClient(
-        host=config.rcon_host,
-        port=config.rcon_port,
-        password=config.rcon_password,
-    ) as client:
-        return await client.send(command)
+    client = await _get_rcon(config)
+    try:
+        response, _ = await client.send_cmd(command)
+        return response
+    except (aiomcrcon.ClientNotConnectedError, OSError):
+        # Connection dropped — reconnect and retry once
+        async with _rcon_lock:
+            _rcon_client = None
+        client = await _get_rcon(config)
+        response, _ = await client.send_cmd(command)
+        return response
 
 
 async def query_player_count(config: Config) -> int:
@@ -191,14 +246,19 @@ async def query_player_count(config: Config) -> int:
 
 async def query_server_status(config: Config) -> str:
     """Query multiple RCON commands and return a formatted status message."""
-    async with MinecraftClient(
-        host=config.rcon_host,
-        port=config.rcon_port,
-        password=config.rcon_password,
-    ) as client:
-        list_raw = await client.send("list")
-        tps_raw = await client.send("tps")
-        gc_raw = await client.send("gc")
+    client = await _get_rcon(config)
+    try:
+        list_raw, _ = await client.send_cmd("list")
+        tps_raw, _ = await client.send_cmd("tps")
+        gc_raw, _ = await client.send_cmd("gc")
+    except (aiomcrcon.ClientNotConnectedError, OSError):
+        # Reconnect and retry once
+        async with _rcon_lock:
+            _rcon_client = None
+        client = await _get_rcon(config)
+        list_raw, _ = await client.send_cmd("list")
+        tps_raw, _ = await client.send_cmd("tps")
+        gc_raw, _ = await client.send_cmd("gc")
 
     online, maximum, names = parse_player_list(list_raw)
     tps = parse_tps(tps_raw)
@@ -210,7 +270,7 @@ async def query_server_status(config: Config) -> str:
     player_list_str = ", ".join(names) if names else "\u2014"
     lines.append(f"\U0001f465 **Players:** {online}/{maximum} ({player_list_str})")
 
-    # Memory line (EssentialsX /gc)
+    # Memory line
     if memory:
         lines.append(f"\U0001f4be **Memory:** {memory}")
 
@@ -219,13 +279,13 @@ async def query_server_status(config: Config) -> str:
         try:
             tps_1m = float(tps.split(",")[0])
             if tps_1m < 10:
-                indicator = "\U0001f534"  # red circle
+                indicator = "\U0001f534"
             elif tps_1m < 18:
-                indicator = "\U0001f7e1"  # yellow circle
+                indicator = "\U0001f7e1"
             else:
-                indicator = "\U0001f7e2"  # green circle
+                indicator = "\U0001f7e2"
         except (ValueError, IndexError):
-            indicator = "\u26aa"  # white circle
+            indicator = "\u26aa"
         lines.append(f"{indicator} **TPS:** {tps}")
     else:
         lines.append("\u26aa **TPS:** N/A")

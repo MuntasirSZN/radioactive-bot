@@ -4,8 +4,6 @@ import asyncio
 import logging
 from pathlib import Path
 
-import rich.logging
-
 from radioactive.auto_stop import AutoStopState, auto_stop_loop
 from radioactive.azure import AzureVmClient
 from radioactive.bot import RadioactiveBot
@@ -13,18 +11,34 @@ from radioactive.config import Config
 
 # ── Logging ───────────────────────────────────────────────────────────
 
-_handler = rich.logging.RichHandler(
-    show_time=True,
-    show_path=False,
-    rich_tracebacks=True,
-    tracebacks_show_locals=True,
-)
+_DEFAULT_FORMAT = "%(asctime)s [%(levelname)-8s] %(name)s: %(message)s"
+
+
+class _ColorFormatter(logging.Formatter):
+    """Minimal ANSI-colored formatter — no dependency overhead."""
+
+    _COLORS = {
+        logging.DEBUG: "\033[90m",  # grey
+        logging.INFO: "\033[32m",  # green
+        logging.WARNING: "\033[33m",  # yellow
+        logging.ERROR: "\033[31m",  # red
+        logging.CRITICAL: "\033[1;31m",  # bold red
+    }
+    _RESET = "\033[0m"
+
+    def format(self, record: logging.LogRecord) -> str:
+        original = record.levelname
+        color = self._COLORS.get(record.levelno, self._RESET)
+        record.levelname = f"{color}{original}{self._RESET}"
+        result = super().format(record)
+        record.levelname = original
+        return result
+
+
+_handler = logging.StreamHandler()
 _handler.setLevel(logging.INFO)
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(message)s",
-    handlers=[_handler],
-)
+_handler.setFormatter(_ColorFormatter(fmt=_DEFAULT_FORMAT, datefmt="%H:%M:%S"))
+logging.basicConfig(level=logging.INFO, handlers=[_handler])
 
 # Suppress verbose SDK request logging
 for name in (

@@ -14,6 +14,8 @@ logger = logging.getLogger(__name__)
 class AutoStopState:
     """Shared mutable state for the auto-stop grace timer."""
 
+    __slots__ = ("lock", "empty_since")
+
     def __init__(self) -> None:
         self.lock = asyncio.Lock()
         self.empty_since: float | None = None  # time.monotonic() timestamp

@@ -127,13 +127,24 @@ class RadioactiveBot(discord.Client):
         asyncio.create_task(self._presence_loop(), name="presence")
 
     async def _presence_loop(self) -> None:
-        """Periodically update bot activity with live player count."""
+        """Periodically update bot activity with live player count.
+
+        Adaptive interval: 5 min when VM is running or state unknown,
+        15 min when VM is off (saves API calls).
+        """
         while True:
             try:
                 await self._update_presence()
             except Exception:
                 logger.exception("Presence update failed")
-            await asyncio.sleep(300)  # 5 min
+
+            # Check current power state via cache to decide next sleep
+            try:
+                p = await self._azure.power_state()
+                sleep = 900 if p is None or p != PowerState.RUNNING else 300
+            except Exception:
+                sleep = 300
+            await asyncio.sleep(sleep)
 
     async def _update_presence(self) -> None:
         """Set bot activity based on current server state."""

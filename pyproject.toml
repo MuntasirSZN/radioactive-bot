@@ -4,12 +4,11 @@ version = "0.1.0"
 description = "Discord bot for managing a Minecraft Azure VM"
 requires-python = ">=3.11"
 dependencies = [
-  "async-mcrcon>=0.1",
+  "aio-mc-rcon>=3.4",
   "azure-identity>=1.12",
   "discord-py>=2.4",
   "httpx>=0.25",
   "python-dotenv>=1.2.2",
-  "rich>=15.0",
 ]
 
 [project.scripts]

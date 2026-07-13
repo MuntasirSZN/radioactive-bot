@@ -2,5 +2,4 @@ discord-py>=2.4
 azure-identity>=1.12
 python-dotenv>=1.2.2
 httpx>=0.25
-async-mcrcon>=0.1
-rich>=15.0
+aio-mc-rcon>=3.4

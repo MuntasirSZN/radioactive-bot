@@ -1,14 +1,31 @@
 from __future__ import annotations
 
 import logging
+import time
 from enum import StrEnum
 
 import httpx
-from azure.identity.aio import ClientSecretCredential
 
 from radioactive.config import Config
 
 logger = logging.getLogger(__name__)
+
+# Lazy import for azure-identity — heavy module, only loaded when used
+_ClientSecretCredential = None
+
+
+def _get_credential(tenant_id: str, client_id: str, client_secret: str):
+    """Lazy import of azure-identity to reduce startup memory."""
+    global _ClientSecretCredential
+    if _ClientSecretCredential is None:
+        from azure.identity.aio import ClientSecretCredential
+
+        _ClientSecretCredential = ClientSecretCredential
+    return _ClientSecretCredential(
+        tenant_id=tenant_id,
+        client_id=client_id,
+        client_secret=client_secret,
+    )
 
 
 class PowerState(StrEnum):
@@ -25,17 +42,41 @@ class AzureVmError(Exception):
 
 
 class AzureVmClient:
+    """Thin Azure VM client with cached power state and minimal connection overhead."""
+
+    __slots__ = ("_config", "_http", "_credential", "_token_cache", "_power_cache")
+
+    _POWER_CACHE_TTL = 5  # seconds — avoid hammering Azure on rapid command spam
+
     def __init__(self, config: Config) -> None:
         self._config = config
-        self._http = httpx.AsyncClient()
-        self._credential = ClientSecretCredential(
-            tenant_id=config.azure_tenant_id,
-            client_id=config.azure_client_id,
-            client_secret=config.azure_client_secret,
+        self._http = httpx.AsyncClient(
+            limits=httpx.Limits(
+                max_keepalive_connections=1,
+                max_connections=2,
+            ),
+            http2=False,  # Azure mgmt API doesn't need HTTP/2
         )
+        self._credential = _get_credential(
+            config.azure_tenant_id,
+            config.azure_client_id,
+            config.azure_client_secret,
+        )
+        # (monotonic_ts, token_str) — None means unset
+        self._token_cache: tuple[float, str] | None = None
+        # (monotonic_ts, PowerState | None) — None means unset
+        self._power_cache: tuple[float, PowerState | None] | None = None
 
     async def _bearer_token(self) -> str:
+        """Return a cached bearer token, refreshing when stale."""
+        now = time.monotonic()
+        if self._token_cache is not None:
+            ts, token = self._token_cache
+            # Azure tokens are valid ~1h; refresh after 45 min
+            if now - ts < 2700:
+                return token
         token = await self._credential.get_token("https://management.azure.com/.default")
+        self._token_cache = (now, token.token)
         return token.token
 
     def _vm_url(self, action: str = "") -> str:
@@ -50,29 +91,48 @@ class AzureVmClient:
 
     async def start_vm(self) -> None:
         await self._post_vm_action("start")
+        self._invalidate_power_cache()
 
     async def deallocate_vm(self) -> None:
         await self._post_vm_action("deallocate")
+        self._invalidate_power_cache()
 
     async def power_state(self) -> PowerState | None:
+        """Return the VM power state, cached for ``_POWER_CACHE_TTL`` seconds."""
+        now = time.monotonic()
+        if self._power_cache is not None:
+            ts, state = self._power_cache
+            if now - ts < self._POWER_CACHE_TTL:
+                return state
+
         token = await self._bearer_token()
         url = self._vm_url("instanceView")
-        resp = await self._http.get(url, headers={"Authorization": f"Bearer {token}"})
+        resp = await self._http.get(
+            url,
+            headers={"Authorization": f"Bearer {token}"},
+        )
         if resp.is_error:
             raise AzureVmError(f"Azure instanceView failed with {resp.status_code}: {resp.text}")
 
         data = resp.json()
+        state: PowerState | None = None
         for status in data.get("statuses", []):
             code: str | None = status.get("code")
             if code and code.startswith("PowerState/"):
-                return PowerState(code.removeprefix("PowerState/"))
-        return None
+                state = PowerState(code.removeprefix("PowerState/"))
+                break
+
+        self._power_cache = (now, state)
+        return state
+
+    def _invalidate_power_cache(self) -> None:
+        self._power_cache = None
+        self._token_cache = None
 
     async def _post_vm_action(self, action: str) -> None:
         token = await self._bearer_token()
         url = self._vm_url(action)
         resp = await self._http.post(url, headers={"Authorization": f"Bearer {token}"})
-        # Azure returns 202 Accepted for async operations
         if not (resp.is_success or resp.status_code == 202):
             raise AzureVmError(f"Azure VM {action} failed with {resp.status_code}: {resp.text}")
 

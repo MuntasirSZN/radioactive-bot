@@ -23,7 +23,7 @@ def _optional_env_int(name: str, default: int) -> int:
     return int(val)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, slots=True)
 class Config:
     discord_token: str
     discord_application_id: int
