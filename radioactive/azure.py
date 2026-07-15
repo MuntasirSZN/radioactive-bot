@@ -62,21 +62,20 @@ class AzureVmClient:
             config.azure_client_id,
             config.azure_client_secret,
         )
-        # (monotonic_ts, token_str) — None means unset
+        # (expires_on_unix_ts, token_str) — None means unset
         self._token_cache: tuple[float, str] | None = None
         # (monotonic_ts, PowerState | None) — None means unset
         self._power_cache: tuple[float, PowerState | None] | None = None
 
     async def _bearer_token(self) -> str:
-        """Return a cached bearer token, refreshing when stale."""
-        now = time.monotonic()
+        """Return a cached bearer token, refreshing when close to expiry."""
         if self._token_cache is not None:
-            ts, token = self._token_cache
-            # Azure tokens are valid ~1h; refresh after 45 min
-            if now - ts < 2700:
+            expires_on, token = self._token_cache
+            # Use the actual token expiry from Azure — refresh 5 min early
+            if time.time() < expires_on - 300:
                 return token
         token = await self._credential.get_token("https://management.azure.com/.default")
-        self._token_cache = (now, token.token)
+        self._token_cache = (token.expires_on, token.token)
         return token.token
 
     def _vm_url(self, action: str = "") -> str:
@@ -127,7 +126,6 @@ class AzureVmClient:
 
     def _invalidate_power_cache(self) -> None:
         self._power_cache = None
-        self._token_cache = None
 
     async def _post_vm_action(self, action: str) -> None:
         token = await self._bearer_token()
