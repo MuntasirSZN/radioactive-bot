@@ -229,10 +229,10 @@ async def send_command(config: Config, command: str) -> str:
     try:
         response, _ = await client.send_cmd(command)
         return response
-    except (aiomcrcon.ClientNotConnectedError, OSError):
-        # Connection dropped — reconnect and retry once
+    except (aiomcrcon.ClientNotConnectedError, OSError, TimeoutError):
+        # Connection dropped or timed out — close stale client, reconnect, retry once
         async with _rcon_lock:
-            _rcon_client = None
+            await _close_rcon()
         client = await _get_rcon(config)
         response, _ = await client.send_cmd(command)
         return response
@@ -251,10 +251,10 @@ async def query_server_status(config: Config) -> str:
         list_raw, _ = await client.send_cmd("list")
         tps_raw, _ = await client.send_cmd("tps")
         gc_raw, _ = await client.send_cmd("gc")
-    except (aiomcrcon.ClientNotConnectedError, OSError):
+    except (aiomcrcon.ClientNotConnectedError, OSError, TimeoutError):
         # Reconnect and retry once
         async with _rcon_lock:
-            _rcon_client = None
+            await _close_rcon()
         client = await _get_rcon(config)
         list_raw, _ = await client.send_cmd("list")
         tps_raw, _ = await client.send_cmd("tps")
