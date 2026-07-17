@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import logging
 import re
 import struct
@@ -220,6 +221,66 @@ def parse_uptime(raw_output: str) -> str | None:
 
 
 # ═══════════════════════════════════════════════════════════════════════
+# MaintenancePaper plugin support
+# ═══════════════════════════════════════════════════════════════════════
+
+
+@dataclass(frozen=True, slots=True)
+class MaintenanceStatus:
+    """Parsed result of `/maintenance status`."""
+
+    enabled: bool
+    timer: str | None = None  # e.g. "will be enabled in 29 minutes 51 seconds"
+
+
+# Matches the single status line from MaintenancePaper:
+#   "Maintenance mode is currently disabled."
+#   "Maintenance mode is currently disabled and will be enabled in 29 minutes 51 seconds."
+_MAINTENANCE_STATUS_RE = re.compile(
+    r"Maintenance\s+mode\s+is\s+(?:currently\s+)?(enabled|disabled)"
+    r"(?:\s+and\s+will\s+be\s+(enabled|disabled)\s+in\s+(.+?))?\.?\s*$",
+    re.IGNORECASE,
+)
+
+
+def parse_maintenance_status(raw_output: str) -> MaintenanceStatus:
+    """Parse `/maintenance status` output from MaintenancePaper.
+
+    Actual output formats observed:
+
+        [Maintenance] Maintenance mode is currently disabled.
+        [Maintenance] Maintenance mode is currently enabled.
+        [Maintenance] Maintenance mode is currently disabled and will be enabled in 29 minutes 51 seconds.
+        [Maintenance] Maintenance mode is currently enabled and will be disabled in 1h5m.
+    """
+    cleaned = _strip_format_codes(raw_output.strip())
+
+    for line in cleaned.splitlines():
+        m = _MAINTENANCE_STATUS_RE.search(line)
+        if not m:
+            continue
+
+        enabled = m.group(1).lower() == "enabled"
+        timer: str | None = None
+
+        if m.group(2) and m.group(3):
+            direction = m.group(2).lower()
+            duration = m.group(3).strip()
+            timer = f"will be {direction} in {duration}"
+
+        return MaintenanceStatus(enabled=enabled, timer=timer)
+
+    # No matching line found — return a safe default
+    return MaintenanceStatus(enabled=False)
+
+
+async def query_maintenance_status(config: Config) -> MaintenanceStatus:
+    """Query MaintenancePaper plugin and return parsed status."""
+    raw = await send_command(config, "/maintenance status")
+    return parse_maintenance_status(raw)
+
+
+# ═══════════════════════════════════════════════════════════════════════
 # RCON queries — reuse persistent connection
 # ═══════════════════════════════════════════════════════════════════════
 
@@ -252,6 +313,7 @@ async def query_server_status(config: Config) -> str:
         list_raw, _ = await client.send_cmd("list")
         tps_raw, _ = await client.send_cmd("tps")
         gc_raw, _ = await client.send_cmd("gc")
+        maint_raw, _ = await client.send_cmd("/maintenance status")
     except (aiomcrcon.ClientNotConnectedError, OSError, TimeoutError, struct.error):
         # Reconnect and retry once
         async with _rcon_lock:
@@ -260,10 +322,12 @@ async def query_server_status(config: Config) -> str:
         list_raw, _ = await client.send_cmd("list")
         tps_raw, _ = await client.send_cmd("tps")
         gc_raw, _ = await client.send_cmd("gc")
+        maint_raw, _ = await client.send_cmd("/maintenance status")
 
     online, maximum, names = parse_player_list(list_raw)
     tps = parse_tps(tps_raw)
     memory = parse_memory(gc_raw)
+    maint = parse_maintenance_status(maint_raw)
 
     lines: list[str] = []
 
@@ -290,5 +354,13 @@ async def query_server_status(config: Config) -> str:
         lines.append(f"{indicator} **TPS:** {tps}")
     else:
         lines.append("\u26aa **TPS:** N/A")
+
+    # Maintenance line
+    if maint.enabled:
+        timer_str = f" \u2014 {maint.timer}" if maint.timer else ""
+        lines.append(f"\U0001f6a7 **Maintenance:** ON{timer_str}")
+    else:
+        timer_str = f" \u2014 {maint.timer}" if maint.timer else ""
+        lines.append(f"\u2705 **Maintenance:** OFF{timer_str}")
 
     return "\n".join(lines)

@@ -6,7 +6,7 @@ import time
 
 from radioactive.azure import AzureVmClient, PowerState
 from radioactive.config import Config
-from radioactive.minecraft import query_player_count
+from radioactive.minecraft import query_maintenance_status, query_player_count
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +65,19 @@ async def auto_stop_tick(
         known_empty = True
     except Exception as exc:
         logger.warning("Failed to query Minecraft online players: %s", exc)
+
+    # ── Maintenance mode check ────────────────────────────────────────
+    # Don't auto-stop when maintenance is active — the server is being
+    # worked on and shutting down would disrupt admin tasks.
+    try:
+        maint = await query_maintenance_status(config)
+        if maint.enabled:
+            logger.info("Maintenance mode is active — skipping auto-stop")
+            async with state.lock:
+                state.empty_since = None
+            return
+    except Exception as exc:
+        logger.warning("Failed to query maintenance status: %s", exc)
 
     # ── Grace timer ──────────────────────────────────────────────────
     now = time.monotonic()

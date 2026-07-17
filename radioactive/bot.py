@@ -13,6 +13,7 @@ from radioactive.config import Config
 from radioactive.minecraft import (
     _strip_format_codes,
     parse_uptime,
+    query_maintenance_status,
     query_player_count,
     query_server_status,
     send_command,
@@ -155,19 +156,38 @@ class RadioactiveBot(discord.Client):
             power = None
 
         if power is None:
-            activity = discord.Game(name="☁️ Azure unreachable")
-        elif power != PowerState.RUNNING:
-            tag = str(power.value).replace("deallocated", "💤 off").replace("stopped", "💤 off")
-            activity = discord.Game(name=tag)
-        else:
-            try:
-                players = await query_player_count(self._config)
-                label = f"🎮 {players}" if players else "🎮 empty"
-                activity = discord.Game(name=label)
-            except Exception:
-                activity = discord.Game(name="🔌 RCON unreachable")
+            await self.change_presence(activity=discord.Game(name="☁️ Azure unreachable"))
+            return
 
-        await self.change_presence(activity=activity)
+        if power != PowerState.RUNNING:
+            tag = str(power.value).replace("deallocated", "\U0001f4a4 off").replace("stopped", "\U0001f4a4 off")
+            await self.change_presence(activity=discord.Game(name=tag))
+            return
+
+        # VM is running — query RCON for player count + maintenance
+        try:
+            players = await query_player_count(self._config)
+            players_label = f"\U0001f3ae {players}" if players else "\U0001f3ae empty"
+        except Exception:
+            await self.change_presence(activity=discord.Game(name="\U0001f50c RCON unreachable"))
+            return
+
+        try:
+            maint = await query_maintenance_status(self._config)
+            if maint.enabled:
+                maint_label = "• \U0001f6a7 Maintenance"
+                if maint.timer and "in " in maint.timer:
+                    dur = maint.timer.split("in ", 1)[-1].strip()
+                    maint_label += f" ({dur})"
+            else:
+                maint_label = "• ✅ OK"
+        except Exception:
+            maint_label = None
+
+        label = f"{players_label}"
+        if maint_label:
+            label += f" {maint_label}"
+        await self.change_presence(activity=discord.Game(name=label))
 
     # ── Command accessors ─────────────────────────────────────────────
 
@@ -315,6 +335,7 @@ class StopCommand(app_commands.Command):
 
     async def _callback(self, interaction: discord.Interaction) -> None:
         azure = self._bot.bot_azure
+        config = self._bot.bot_config
         await _defer(interaction)
         logger.info("Received /stop command")
 
@@ -325,6 +346,25 @@ class StopCommand(app_commands.Command):
                 _embed(COLOUR_YELLOW, "VM is already stopped."),
             )
             return
+
+        # Block /stop when maintenance is active
+        if power == PowerState.RUNNING:
+            try:
+                maint = await query_maintenance_status(config)
+                if maint.enabled:
+                    logger.info("Stop rejected — maintenance mode is active")
+                    timer_str = f" ({maint.timer})" if maint.timer else ""
+                    await _edit_embed(
+                        interaction,
+                        _embed(
+                            COLOUR_RED,
+                            "\u26d4 Stop Blocked — Maintenance Mode Active",
+                            f"The server is in maintenance mode{timer_str}. ",
+                        ),
+                    )
+                    return
+            except Exception:
+                pass
 
         if self._bot.stop_lock.locked():
             await _edit_embed(
