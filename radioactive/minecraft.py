@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import re
+import struct
 from typing import TYPE_CHECKING
 
 import aiomcrcon
@@ -229,7 +230,7 @@ async def send_command(config: Config, command: str) -> str:
     try:
         response, _ = await client.send_cmd(command)
         return response
-    except (aiomcrcon.ClientNotConnectedError, OSError, TimeoutError):
+    except (aiomcrcon.ClientNotConnectedError, OSError, TimeoutError, struct.error):
         # Connection dropped or timed out — close stale client, reconnect, retry once
         async with _rcon_lock:
             await _close_rcon()
@@ -251,7 +252,7 @@ async def query_server_status(config: Config) -> str:
         list_raw, _ = await client.send_cmd("list")
         tps_raw, _ = await client.send_cmd("tps")
         gc_raw, _ = await client.send_cmd("gc")
-    except (aiomcrcon.ClientNotConnectedError, OSError, TimeoutError):
+    except (aiomcrcon.ClientNotConnectedError, OSError, TimeoutError, struct.error):
         # Reconnect and retry once
         async with _rcon_lock:
             await _close_rcon()
